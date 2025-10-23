@@ -91,11 +91,9 @@ public:
         };
 
         std::string responseStr = PostJson("login", BuildJson(payload));
-        if (responseStr.empty()) {
-            return false;
-        }
 
         ParseResponse(responseStr);
+
         return response.success;
     }
 
@@ -106,19 +104,18 @@ public:
             {"username", username},
             {"password", password},
             {"key", key},
+            {"email", email},
             {"hwid", GetSystemSid()}
         };
 
-        if (!email.empty()) {
-            payload["email"] = email;
-        }
-
         std::string responseStr = PostJson("register", BuildJson(payload));
-        if (responseStr.empty()) {
-            return false;
-        }
 
         ParseResponse(responseStr);
+
+        if (response.success) {
+            sessionId = ExtractJsonValue(responseStr, "session_id");
+        }
+
         return response.success;
     }
 
@@ -131,11 +128,9 @@ public:
         };
 
         std::string responseStr = PostJson("licenses", BuildJson(payload));
-        if (responseStr.empty()) {
-            return false;
-        }
 
         ParseResponse(responseStr);
+
         return response.success;
     }
 
@@ -146,11 +141,9 @@ public:
         };
 
         std::string responseStr = PostJson("variables", BuildJson(payload));
-        if (responseStr.empty()) {
-            return "";
-        }
 
         ParseResponse(responseStr);
+
         return variableData.varValue;
     }
 
@@ -162,200 +155,136 @@ public:
         };
 
         std::string responseStr = PostJson("variables/set", BuildJson(payload));
-        if (responseStr.empty()) {
-            return false;
-        }
 
         ParseResponse(responseStr);
+
+        return response.success;
+    }
+
+    bool Log(const std::string& message) {
+        std::map<std::string, std::string> payload = {
+            {"session_id", sessionId},
+            {"message", message}
+        };
+
+        std::string responseStr = PostJson("logs", BuildJson(payload));
+
+        ParseResponse(responseStr);
+
         return response.success;
     }
 
 private:
-    std::string PostJson(const std::string& endpoint, const std::string& json) {
-        HINTERNET hSession = NULL, hConnect = NULL, hRequest = NULL;
-        std::string response;
-
-        hSession = WinHttpOpen(L"AuthlyX Client",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession) {
-            this->response.message = "Network initialization failed";
-            return "";
-        }
-
-        hConnect = WinHttpConnect(hSession, L"authly.cc",
-            INTERNET_DEFAULT_HTTPS_PORT, 0);
-        if (!hConnect) {
-            WinHttpCloseHandle(hSession);
-            this->response.message = "Cannot connect to authentication server";
-            return "";
-        }
-
-        std::wstring wpath = L"/api/v1/" + std::wstring(endpoint.begin(), endpoint.end());
-        hRequest = WinHttpOpenRequest(hConnect, L"POST", wpath.c_str(),
-            NULL, WINHTTP_NO_REFERER,
-            WINHTTP_DEFAULT_ACCEPT_TYPES,
-            WINHTTP_FLAG_SECURE);
-        if (!hRequest) {
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            this->response.message = "Failed to create secure connection";
-            return "";
-        }
-
-        LPCWSTR headers = L"Content-Type: application/json; charset=utf-8";
-        WinHttpAddRequestHeaders(hRequest, headers, (DWORD)wcslen(headers),
-            WINHTTP_ADDREQ_FLAG_ADD);
-
-
-        std::string utf8Json = json;
-        DWORD jsonLength = (DWORD)utf8Json.length();
-
-        BOOL sendResult = WinHttpSendRequest(hRequest,
-            WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            (LPVOID)utf8Json.c_str(),
-            jsonLength,
-            jsonLength, 0);
-
-        if (sendResult) {
-            WinHttpReceiveResponse(hRequest, NULL);
-
-            DWORD size = 0;
-            do {
-                if (!WinHttpQueryDataAvailable(hRequest, &size)) {
-                    break;
-                }
-
-                if (size > 0) {
-                    std::vector<char> buffer(size + 1);
-                    DWORD downloaded = 0;
-                    if (WinHttpReadData(hRequest, buffer.data(), size, &downloaded)) {
-                        response.append(buffer.data(), downloaded);
-                    }
-                }
-            } while (size > 0);
-        }
-
-        if (hRequest) WinHttpCloseHandle(hRequest);
-        if (hConnect) WinHttpCloseHandle(hConnect);
-        if (hSession) WinHttpCloseHandle(hSession);
-
-        return response;
-    }
-
     std::string BuildJson(const std::map<std::string, std::string>& data) {
         std::string json = "{";
-        bool first = true;
-
-        for (const auto& pair : data) {
-            if (!first) json += ",";
-            json += "\"" + pair.first + "\":\"" + EscapeJsonString(pair.second) + "\"";
-            first = false;
+        for (auto it = data.begin(); it != data.end(); ++it) {
+            if (it != data.begin()) json += ",";
+            json += "\"" + it->first + "\":\"" + it->second + "\"";
         }
         json += "}";
         return json;
     }
 
-    std::string EscapeJsonString(const std::string& str) {
-        std::string result;
-        for (char c : str) {
-            switch (c) {
-            case '"': result += "\\\""; break;
-            case '\\': result += "\\\\"; break;
-            case '\b': result += "\\b"; break;
-            case '\f': result += "\\f"; break;
-            case '\n': result += "\\n"; break;
-            case '\r': result += "\\r"; break;
-            case '\t': result += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 32) {
-                    char buf[7];
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    result += buf;
-                }
-                else {
-                    result += c;
-                }
-                break;
-            }
+    std::string PostJson(const std::string& endpoint, const std::string& jsonPayload) {
+        HINTERNET hSession = WinHttpOpen(L"AuthlyX", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!hSession) return "";
+
+        HINTERNET hConnect = WinHttpConnect(hSession, L"authly.cc", INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!hConnect) {
+            WinHttpCloseHandle(hSession);
+            return "";
         }
-        return result;
+
+        std::wstring wideEndpoint = std::wstring(endpoint.begin(), endpoint.end());
+        wideEndpoint = L"/api/v1/" + wideEndpoint;
+
+        HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", wideEndpoint.c_str(), NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (!hRequest) {
+            WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return "";
+        }
+
+        std::wstring headers = L"Content-Type: application/json\r\n";
+        BOOL bResults = WinHttpSendRequest(hRequest, headers.c_str(), (DWORD)headers.length(), (LPVOID)jsonPayload.c_str(), (DWORD)jsonPayload.length(), (DWORD)jsonPayload.length(), 0);
+
+        if (bResults) bResults = WinHttpReceiveResponse(hRequest, NULL);
+
+        std::string responseStr;
+        if (bResults) {
+            DWORD dwSize = 0;
+            DWORD dwDownloaded = 0;
+            do {
+                dwSize = 0;
+                WinHttpQueryDataAvailable(hRequest, &dwSize);
+                if (!dwSize) break;
+
+                char* pszOutBuffer = new char[dwSize + 1];
+                if (!pszOutBuffer) break;
+
+                ZeroMemory(pszOutBuffer, dwSize + 1);
+
+                if (WinHttpReadData(hRequest, (LPVOID)pszOutBuffer, dwSize, &dwDownloaded)) {
+                    responseStr += std::string(pszOutBuffer, dwDownloaded);
+                }
+
+                delete[] pszOutBuffer;
+            } while (dwSize > 0);
+        }
+
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+
+        return responseStr;
     }
 
     std::string GetSystemSid() {
         HANDLE hToken = NULL;
-        DWORD length = 0;
-        std::string sidStr = "UNKNOWN_SID";
-
-        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-            GetTokenInformation(hToken, TokenUser, NULL, 0, &length);
-
-            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
-                std::vector<BYTE> buffer(length);
-                if (GetTokenInformation(hToken, TokenUser, buffer.data(), length, &length)) {
-                    PTOKEN_USER pTokenUser = (PTOKEN_USER)buffer.data();
-                    LPSTR str = NULL;
-                    if (ConvertSidToStringSidA(pTokenUser->User.Sid, &str)) {
-                        sidStr = str;
-                        LocalFree(str);
-                    }
-                }
-            }
-            CloseHandle(hToken);
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+            return "UNKNOWN_SID";
         }
 
-        return sidStr;
+        DWORD dwSize = 0;
+        GetTokenInformation(hToken, TokenUser, NULL, 0, &dwSize);
+        PTOKEN_USER pTokenUser = (PTOKEN_USER)malloc(dwSize);
+
+        if (!GetTokenInformation(hToken, TokenUser, pTokenUser, dwSize, &dwSize)) {
+            free(pTokenUser);
+            CloseHandle(hToken);
+            return "UNKNOWN_SID";
+        }
+
+        LPSTR sidStr = NULL;
+        ConvertSidToStringSidA(pTokenUser->User.Sid, &sidStr);
+
+        std::string sid(sidStr);
+        LocalFree(sidStr);
+        free(pTokenUser);
+        CloseHandle(hToken);
+
+        return sid;
     }
 
     std::string GetLocalIp() {
-        std::string ip = "UNKNOWN_IP";
-        HINTERNET hSession = NULL, hConnect = NULL, hRequest = NULL;
+        ULONG ulOutBufLen = sizeof(MIB_IPADDRTABLE);
+        PMIB_IPADDRTABLE pIPAddrTable = (PMIB_IPADDRTABLE)malloc(ulOutBufLen);
 
-        hSession = WinHttpOpen(L"IP Checker",
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!hSession) return ip;
-
-        hConnect = WinHttpConnect(hSession, L"api.ipify.org",
-            INTERNET_DEFAULT_HTTPS_PORT, 0);
-        if (!hConnect) {
-            WinHttpCloseHandle(hSession);
-            return ip;
-        }
-
-        hRequest = WinHttpOpenRequest(hConnect, L"GET", L"/",
-            NULL, WINHTTP_NO_REFERER,
-            WINHTTP_DEFAULT_ACCEPT_TYPES,
-            WINHTTP_FLAG_SECURE);
-        if (!hRequest) {
-            WinHttpCloseHandle(hConnect);
-            WinHttpCloseHandle(hSession);
-            return ip;
-        }
-
-        if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-            WinHttpReceiveResponse(hRequest, NULL);
-
-            DWORD size = 0;
-            std::vector<char> buffer(4096);
-            DWORD downloaded = 0;
-
-            if (WinHttpReadData(hRequest, buffer.data(), buffer.size() - 1, &downloaded)) {
-                if (downloaded > 0) {
-                    buffer[downloaded] = '\0';
-                    ip = buffer.data();
+        DWORD dwRetVal = GetIpAddrTable(pIPAddrTable, &ulOutBufLen, 0);
+        if (dwRetVal == NO_ERROR) {
+            for (DWORD i = 0; i < pIPAddrTable->dwNumEntries; i++) {
+                IN_ADDR IPAddr;
+                IPAddr.S_un.S_addr = (u_long)pIPAddrTable->table[i].dwAddr;
+                std::string ip(inet_ntoa(IPAddr));
+                if (ip != "127.0.0.1" && ip != "0.0.0.0") {
+                    free(pIPAddrTable);
+                    return ip;
                 }
             }
         }
 
-        if (hRequest) WinHttpCloseHandle(hRequest);
-        if (hConnect) WinHttpCloseHandle(hConnect);
-        if (hSession) WinHttpCloseHandle(hSession);
-
-        return ip;
+        free(pIPAddrTable);
+        return "UNKNOWN_IP";
     }
 
     std::string ExtractJsonValue(const std::string& json, const std::string& key) {
@@ -365,16 +294,6 @@ private:
             searchKey = "\"" + key + "\":";
             pos = json.find(searchKey);
             if (pos == std::string::npos) return "";
-
-            size_t start = pos + searchKey.length();
-            size_t end = json.find_first_of(",}", start);
-            if (end == std::string::npos) return "";
-
-            std::string value = json.substr(start, end - start);
-            if (value.length() >= 2 && value[0] == '"' && value[value.length() - 1] == '"') {
-                value = value.substr(1, value.length() - 2);
-            }
-            return value;
         }
 
         size_t start = pos + searchKey.length();
